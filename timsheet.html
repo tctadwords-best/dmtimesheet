@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ad Team Timesheet Dashboard</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+
+    <!-- Firebase SDK (Modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expose Firebase SDK to window for React/Babel to access
+        window.FirebaseSDK = {
+            initializeApp, getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged,
+            getFirestore, doc, setDoc, onSnapshot
+        };
+        window.dispatchEvent(new Event('firebase-loaded'));
+    </script>
+
+    <style>
+        /* Hide scrollbar for tabs */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        const INITIAL_TEAM_MEMBERS = [
+          { id: 'best', name: 'Best', role: 'Manager', targetActive: 50 },
+          { id: 'namk', name: 'Bank', role: 'Member', targetActive: 70 },
+          { id: 'pirun', name: 'Pirun', role: 'Member', targetActive: 70 },
+          { id: 'petai', name: 'Petai', role: 'Member', targetActive: 70 },
+        ];
+
+        const INITIAL_PROJECTS = [
+          { id: 'p1', name: 'Scholl', maxHours: 40 },
+          { id: 'p2', name: 'In2it', maxHours: 26 },
+          { id: 'p3', name: 'KAO', maxHours: 10 },
+          { id: 'p4', name: 'Volvo/UD', maxHours: 14 },
+          { id: 'p5', name: 'Volvo/UD LIVE', maxHours: 4 },
+          { id: 'p6', name: 'Yamaha', maxHours: 12 },
+          { id: 'p7', name: 'Canon', maxHours: 1 },
+          { id: 'p8', name: 'PAT', maxHours: 100 },
+          { id: 'p9', name: 'TPIS', maxHours: 45 },
+          { id: 'p10', name: 'Noritz', maxHours: 15 },
+          { id: 'p11', name: 'SCG', maxHours: 20 },
+          { id: 'p12', name: 'Avally', maxHours: 10 },
+          { id: 'p13', name: 'Sengoku', maxHours: 10 },
+          { id: 'p14', name: 'Lenovo', maxHours: 1 },
+          { id: 'p15', name: 'Presale (SEO)', maxHours: 45 },
+          { id: 'p16', name: 'INE', maxHours: 40 },
+        ];
+
+        const initialMaxHours = INITIAL_PROJECTS.reduce((acc, p) => {
+          acc[p.id] = p.maxHours;
+          return acc;
+        }, {});
+
+        function App() {
+          // Firebase States
+          const [firebaseLoaded, setFirebaseLoaded] = useState(!!window.FirebaseSDK);
+          const [user, setUser] = useState(null);
+          const [db, setDb] = useState(null);
+          const [saveStatus, setSaveStatus] = useState(''); // '', 'saving', 'saved', 'error'
+
+          // Team Management State
+          const [members, setMembers] = useState(INITIAL_TEAM_MEMBERS);
+          const [showTeamModal, setShowTeamModal] = useState(false);
+
+          // Project Management State
+          const [projects, setProjects] = useState(INITIAL_PROJECTS);
+          const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+          const [newProjectName, setNewProjectName] = useState('');
+          const [newProjectMax, setNewProjectMax] = useState('');
+          const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+          const [editingProjectId, setEditingProjectId] = useState(null);
+          const [editingProjectName, setEditingProjectName] = useState('');
+          const [memberToDelete, setMemberToDelete] = useState(null);
+
+          // Month Management State
+          const [months, setMonths] = useState(['Feb-26']);
+          const [activeMonth, setActiveMonth] = useState('Feb-26');
+          const [showNewMonthInput, setShowNewMonthInput] = useState(false);
+          const [newMonthName, setNewMonthName] = useState('');
+          const [deleteMonthConfirm, setDeleteMonthConfirm] = useState(null);
+          const [isEditingMonth, setIsEditingMonth] = useState(false);
+          const [editingMonthName, setEditingMonthName] = useState('');
+
+          // State for tracked data per month
+          const [dataByMonth, setDataByMonth] = useState({
+            'Feb-26': {
+              baseHours: 176,
+              maxHoursData: { ...initialMaxHours },
+              hoursData: {
+                'p1-best': 15, 'p1-petai': 25,
+                'p2-pirun': 18, 'p2-petai': 8,
+                'p3-petai': 10,
+                'p4-namk': 10, 'p4-petai': 4,
+                'p5-namk': 4,
+                'p6-namk': 12,
+                'p7-best': 1,
+                'p8-namk': 70, 'p8-pirun': 30,
+                'p9-best': 30, 'p9-pirun': 15,
+                'p10-pirun': 15,
+                'p11-namk': 15, 'p11-petai': 5,
+                'p12-pirun': 10,
+                'p13-pirun': 10,
+                'p14-best': 1,
+                'p15-best': 5, 'p15-namk': 20, 'p15-pirun': 10, 'p15-petai': 10,
+                'p16-petai': 40,
+              },
+              leaveData: INITIAL_TEAM_MEMBERS.reduce((acc, member) => {
+                acc[member.id] = { leave: 0, holiday: 0 };
+                return acc;
+              }, {})
+            }
+          });
+
+          // Wait for Firebase SDK to load
+          useEffect(() => {
+            const handleLoad = () => setFirebaseLoaded(true);
+            window.addEventListener('firebase-loaded', handleLoad);
+            return () => window.removeEventListener('firebase-loaded', handleLoad);
+          }, []);
+
+          // Initialize Firebase and Auth
+          useEffect(() => {
+            if (!firebaseLoaded) return;
+            if (typeof __firebase_config === 'undefined') {
+                console.warn("No Firebase configuration found. Please run this inside the correct environment.");
+                return;
+            }
+            
+            const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, getFirestore } = window.FirebaseSDK;
+            
+            try {
+                const config = JSON.parse(__firebase_config);
+                const appInstance = initializeApp(config);
+                const authInstance = getAuth(appInstance);
+                setDb(getFirestore(appInstance));
+
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(authInstance, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(authInstance);
+                    }
+                };
+                initAuth();
+
+                const unsubscribe = onAuthStateChanged(authInstance, setUser);
+                return () => unsubscribe();
+            } catch (e) {
+                console.error("Firebase init error:", e);
+            }
+          }, [firebaseLoaded]);
+
+          // Fetch Data from Firestore on Load & Real-time Sync
+          useEffect(() => {
+            if (!user || !db || !window.FirebaseSDK) return;
+            const { doc, onSnapshot } = window.FirebaseSDK;
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'timesheets', 'main_shared');
+
+            const unsubscribe = onSnapshot(docRef, (docSnap) => {
+              if (docSnap.exists()) {
+                const data = docSnap.data();
+                if (data.months && data.months.length > 0) setMonths(data.months);
+                if (data.dataByMonth) setDataByMonth(data.dataByMonth);
+                if (data.projects) setProjects(data.projects);
+                if (data.members) setMembers(data.members);
+              }
+            }, (error) => {
+              console.error("Error fetching data:", error);
+            });
+            
+            return () => unsubscribe();
+          }, [user, db]);
+
+          // Handle Save to Firebase
+          const handleSaveData = async () => {
+            if (!user || !db || !window.FirebaseSDK) return;
+            setSaveStatus('saving');
+            const { doc, setDoc } = window.FirebaseSDK;
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+            try {
+              const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'timesheets', 'main_shared');
+              await setDoc(docRef, {
+                months,
+                activeMonth,
+                dataByMonth,
+                projects,
+                members
+              });
+              setSaveStatus('saved');
+              setTimeout(() => setSaveStatus(''), 3000); // Reset status after 3 seconds
+            } catch (error) {
+              console.error("Error saving data:", error);
+              setSaveStatus('error');
+            }
+          };
+
+          // Get current month's data safely
+          const currentData = dataByMonth[activeMonth] || {};
+          const baseHours = currentData.baseHours || 176;
+          const maxHoursData = currentData.maxHoursData || initialMaxHours;
+          const hoursData = currentData.hoursData || {};
+          const leaveData = currentData.leaveData || {};
+
+          const handleAddMonth = () => {
+            if (newMonthName.trim() && !months.includes(newMonthName.trim())) {
+              const monthKey = newMonthName.trim();
+              setMonths([...months, monthKey]);
+              setDataByMonth(prev => ({
+                ...prev,
+                [monthKey]: {
+                  baseHours: 176,
+                  maxHoursData: { ...initialMaxHours },
+                  hoursData: {},
+                  leaveData: members.reduce((acc, member) => {
+                    acc[member.id] = { leave: 0, holiday: 0 };
+                    return acc;
+                  }, {})
+                }
+              }));
+              setActiveMonth(monthKey);
+              setNewMonthName('');
+              setShowNewMonthInput(false);
+            }
+          };
+
+          const handleRenameMonth = () => {
+            if (editingMonthName.trim() && editingMonthName !== activeMonth && !months.includes(editingMonthName.trim())) {
+              const newName = editingMonthName.trim();
+              setMonths(months.map(m => m === activeMonth ? newName : m));
+              setDataByMonth(prev => {
+                const newData = { ...prev };
+                newData[newName] = newData[activeMonth];
+                delete newData[activeMonth];
+                return newData;
+              });
+              setActiveMonth(newName);
+            }
+            setIsEditingMonth(false);
+          };
+
+          const handleDeleteMonth = (monthToDelete) => {
+            const newMonths = months.filter(m => m !== monthToDelete);
+            setMonths(newMonths);
+            setDataByMonth(prev => {
+              const newData = { ...prev };
+              delete newData[monthToDelete];
+              return newData;
+            });
+            if (activeMonth === monthToDelete) {
+              setActiveMonth(newMonths[newMonths.length - 1] || '');
+            }
+            setDeleteMonthConfirm(null);
+          };
+
+          const handleBaseHoursChange = (value) => {
+            const numValue = parseFloat(value) || 0;
+            setDataByMonth(prev => ({
+              ...prev,
+              [activeMonth]: { ...(prev[activeMonth] || {}), baseHours: numValue }
+            }));
+          };
+
+          const handleHourChange = (projectId, memberId, value) => {
+            const numValue = parseFloat(value) || 0;
+            setDataByMonth(prev => ({
+              ...prev,
+              [activeMonth]: {
+                ...(prev[activeMonth] || {}),
+                hoursData: {
+                  ...((prev[activeMonth] && prev[activeMonth].hoursData) || {}),
+                  [`${projectId}-${memberId}`]: numValue,
+                }
+              }
+            }));
+          };
+
+          const handleMaxHourChange = (projectId, value) => {
+            const numValue = parseFloat(value) || 0;
+            setDataByMonth(prev => ({
+              ...prev,
+              [activeMonth]: {
+                ...(prev[activeMonth] || {}),
+                maxHoursData: {
+                  ...((prev[activeMonth] && prev[activeMonth].maxHoursData) || initialMaxHours),
+                  [projectId]: numValue,
+                }
+              }
+            }));
+          };
+
+          const handleLeaveChange = (memberId, type, value) => {
+            const numValue = parseFloat(value) || 0;
+            setDataByMonth(prev => ({
+              ...prev,
+              [activeMonth]: {
+                ...(prev[activeMonth] || {}),
+                leaveData: {
+                  ...((prev[activeMonth] && prev[activeMonth].leaveData) || {}),
+                  [memberId]: {
+                    ...((prev[activeMonth] && prev[activeMonth].leaveData && prev[activeMonth].leaveData[memberId]) || {}),
+                    [type]: numValue,
+                  }
+                }
+              }
+            }));
+          };
+
+          const handleAddProject = () => {
+            if (!newProjectName.trim()) return;
+            const newProject = {
+              id: `p_${Date.now()}`,
+              name: newProjectName.trim(),
+              maxHours: parseFloat(newProjectMax) || 0
+            };
+            setProjects([...projects, newProject]);
+            setNewProjectName('');
+            setNewProjectMax('');
+          };
+
+          const saveProjectName = (id) => {
+            if (editingProjectName.trim()) {
+              setProjects(projects.map(p => p.id === id ? { ...p, name: editingProjectName.trim() } : p));
+            }
+            setEditingProjectId(null);
+          };
+
+          const handleDeleteProject = (projectId) => {
+            setProjects(projects.filter(p => p.id !== projectId));
+            setDeleteConfirmId(null);
+          };
+
+          const handleAddMember = () => {
+            const newId = `m_${Date.now()}`;
+            setMembers([...members, { id: newId, name: 'New Member', role: 'Member', targetActive: 70 }]);
+          };
+          
+          const handleUpdateMember = (id, field, value) => {
+            setMembers(members.map(m => m.id === id ? { ...m, [field]: value } : m));
+          };
+
+          const handleRemoveMember = (id) => {
+            setMemberToDelete(id);
+          };
+
+          const handleSort = (key) => {
+            let direction = 'asc';
+            if (sortConfig.key === key && sortConfig.direction === 'asc') {
+              direction = 'desc';
+            }
+            setSortConfig({ key, direction });
+          };
+
+          const calculations = useMemo(() => {
+            const summary = {};
+            const projectStats = {};
+
+            members.forEach((member) => {
+              const memberLeaveData = leaveData[member.id] || {};
+              const leave = memberLeaveData.leave || 0;
+              const holiday = memberLeaveData.holiday || 0;
+              const netWorkingHours = baseHours - leave - holiday;
+              
+              summary[member.id] = {
+                totalActiveHours: 0,
+                netWorkingHours: netWorkingHours,
+              };
+            });
+
+            projects.forEach((project) => {
+              let totalProjectHours = 0;
+              
+              members.forEach((member) => {
+                const hours = hoursData[`${project.id}-${member.id}`] || 0;
+                totalProjectHours += hours;
+                if(summary[member.id]){
+                  summary[member.id].totalActiveHours += hours;
+                }
+              });
+
+              const currentMaxHours = maxHoursData[project.id] !== undefined ? maxHoursData[project.id] : project.maxHours;
+
+              projectStats[project.id] = {
+                totalHours: totalProjectHours,
+                achRate: currentMaxHours > 0 ? (totalProjectHours / currentMaxHours) * 100 : 0,
+                maxHours: currentMaxHours
+              };
+            });
+
+            members.forEach((member) => {
+              const stats = summary[member.id];
+              if(!stats) return;
+              stats.nonActiveHours = Math.max(0, stats.netWorkingHours - stats.totalActiveHours);
+              
+              if (stats.netWorkingHours > 0) {
+                stats.activePercent = (stats.totalActiveHours / stats.netWorkingHours) * 100;
+                stats.nonActivePercent = (stats.nonActiveHours / stats.netWorkingHours) * 100;
+              } else {
+                stats.activePercent = 0;
+                stats.nonActivePercent = 0;
+              }
+              
+              stats.isMeetingTarget = stats.activePercent >= member.targetActive;
+            });
+
+            return { summary, projectStats };
+          }, [hoursData, leaveData, baseHours, maxHoursData, projects, members]);
+
+          const sortedProjects = useMemo(() => {
+            let sortableItems = [...projects];
+            if (sortConfig.key !== null) {
+              sortableItems.sort((a, b) => {
+                let aValue = 0;
+                let bValue = 0;
+
+                if (sortConfig.key === 'name') {
+                  aValue = a.name.toLowerCase();
+                  bValue = b.name.toLowerCase();
+                } else if (sortConfig.key === 'maxHours') {
+                  aValue = maxHoursData[a.id] !== undefined ? maxHoursData[a.id] : a.maxHours;
+                  bValue = maxHoursData[b.id] !== undefined ? maxHoursData[b.id] : b.maxHours;
+                } else if (sortConfig.key === 'totalHours' || sortConfig.key === 'achRate') {
+                  aValue = calculations.projectStats[a.id] ? calculations.projectStats[a.id][sortConfig.key] : 0;
+                  bValue = calculations.projectStats[b.id] ? calculations.projectStats[b.id][sortConfig.key] : 0;
+                } else if (sortConfig.key && sortConfig.key.startsWith('member-')) {
+                  const memberId = sortConfig.key.split('-')[1];
+                  aValue = hoursData[`${a.id}-${memberId}`] || 0;
+                  bValue = hoursData[`${b.id}-${memberId}`] || 0;
+                }
+
+                if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+                if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+                return 0;
+              });
+            }
+            return sortableItems;
+          }, [projects, sortConfig, maxHoursData, calculations.projectStats, hoursData]);
+
+          if (!activeMonth && months.length === 0) {
+            return (
+              <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 font-sans">
+                 <h2 className="text-xl font-bold text-gray-800 mb-4">ไม่มีข้อมูลเดือน</h2>
+                 <button onClick={() => setShowNewMonthInput(true)} className="px-4 py-2 bg-blue-600 text-white rounded-lg"><i className="fa-solid fa-plus w-4 h-4 inline"></i> สร้างเดือนใหม่</button>
+                 {showNewMonthInput && (
+                   <div className="mt-4 flex gap-2">
+                     <input type="text" value={newMonthName} onChange={e => setNewMonthName(e.target.value)} className="border p-2 rounded" placeholder="ชื่อเดือน" />
+                     <button onClick={handleAddMonth} className="bg-emerald-500 text-white px-4 py-2 rounded">Save</button>
+                   </div>
+                 )}
+              </div>
+            );
+          }
+
+          return (
+            <div className="min-h-screen bg-gray-50 p-6 font-sans">
+              <div className="max-w-7xl mx-auto space-y-6">
+                
+                {/* Top Controls: Tabs & Save Button */}
+                <div className="flex flex-col sm:flex-row sm:items-start sm:items-center justify-between gap-4">
+                  {/* Tabs for Months */}
+                  <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide w-full">
+                    {months.map(month => (
+                      <div key={month} className="flex items-center group relative">
+                        <button
+                          onClick={() => setActiveMonth(month)}
+                          className={`px-4 py-2 rounded-lg font-medium whitespace-nowrap transition-colors ${
+                            activeMonth === month 
+                              ? 'bg-blue-600 text-white shadow-md pr-10' 
+                              : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                          }`}
+                        >
+                          {month}
+                        </button>
+                        {activeMonth === month && (
+                          <button 
+                            onClick={() => setDeleteMonthConfirm(month)}
+                            className="absolute right-2 text-blue-200 hover:text-white p-1 rounded-full hover:bg-blue-700 transition-colors"
+                            title="ลบเดือนนี้"
+                          >
+                            <i className="fa-solid fa-trash-can text-xs"></i>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  
+                  {/* Add New Month Form */}
+                  {showNewMonthInput ? (
+                    <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-gray-200 shadow-sm">
+                      <input 
+                        type="text"
+                        value={newMonthName}
+                        onChange={(e) => setNewMonthName(e.target.value)}
+                        placeholder="เช่น Mar-26"
+                        className="w-24 px-2 py-1 text-sm border border-gray-200 rounded outline-none focus:border-blue-400"
+                        autoFocus
+                        onKeyDown={e => e.key === 'Enter' && handleAddMonth()}
+                      />
+                      <button 
+                        onClick={handleAddMonth}
+                        className="text-white bg-emerald-500 hover:bg-emerald-600 px-3 py-1 rounded text-sm font-medium transition-colors"
+                      >
+                        Save
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setShowNewMonthInput(false);
+                          setNewMonthName('');
+                        }}
+                        className="text-gray-500 hover:text-gray-700 px-2 py-1 text-sm font-medium"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowNewMonthInput(true)}
+                      className="px-4 py-2 rounded-lg font-medium whitespace-nowrap bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 flex items-center gap-1 transition-colors"
+                    >
+                      <i className="fa-solid fa-plus text-sm"></i> New Month
+                    </button>
+                  )}
+                  </div>
+
+                  {/* Save Button */}
+                  <div className="flex-shrink-0 w-full sm:w-auto">
+                    <button
+                      onClick={handleSaveData}
+                      disabled={saveStatus === 'saving'}
+                      className={`flex items-center justify-center gap-2 px-6 py-2 rounded-lg font-medium transition-all shadow-sm w-full ${
+                        saveStatus === 'saved' ? 'bg-emerald-500 text-white' :
+                        saveStatus === 'saving' ? 'bg-blue-400 text-white cursor-not-allowed' :
+                        'bg-blue-600 text-white hover:bg-blue-700 hover:shadow'
+                      }`}
+                    >
+                      {saveStatus === 'saved' ? <i className="fa-solid fa-circle-check"></i> : 
+                       saveStatus === 'saving' ? <i className="fa-solid fa-spinner fa-spin"></i> : 
+                       <i className="fa-solid fa-cloud"></i>}
+                      {saveStatus === 'saved' ? 'Saved to Cloud' : 
+                       saveStatus === 'saving' ? 'Saving...' : 
+                       'Save Data'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Header */}
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                  <div>
+                    <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                      <i className="fa-regular fa-clock text-blue-600 text-2xl"></i>
+                      {isEditingMonth ? (
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="text" 
+                            value={editingMonthName} 
+                            onChange={e => setEditingMonthName(e.target.value)}
+                            className="border border-gray-300 rounded px-2 py-1 text-xl w-32 focus:ring-2 focus:ring-blue-400 outline-none"
+                            autoFocus
+                            onKeyDown={e => e.key === 'Enter' && handleRenameMonth()}
+                          />
+                          <button onClick={handleRenameMonth} className="bg-emerald-500 text-white p-1.5 rounded hover:bg-emerald-600"><i className="fa-solid fa-circle-check"></i></button>
+                          <button onClick={() => setIsEditingMonth(false)} className="bg-gray-200 text-gray-600 p-1.5 rounded hover:bg-gray-300"><i className="fa-solid fa-xmark"></i></button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          Ad Team Timesheet Management - {activeMonth}
+                          <button onClick={() => { setIsEditingMonth(true); setEditingMonthName(activeMonth); }} className="text-gray-400 hover:text-blue-600 transition-colors">
+                            <i className="fa-solid fa-pen text-sm"></i>
+                          </button>
+                        </div>
+                      )}
+                      <span className="ml-2 text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full flex items-center gap-1 hidden sm:flex">
+                        <i className="fa-solid fa-cloud text-xs"></i> Shared Workspace
+                      </span>
+                    </h1>
+                    <p className="text-gray-500 mt-1">ติดตามชั่วโมงการทำงาน (Active vs Non-active) เทียบกับ Target</p>
+                  </div>
+                  <div className="flex items-center gap-3 w-full md:w-auto">
+                    <button 
+                      onClick={() => setShowTeamModal(true)}
+                      className="bg-white text-gray-700 px-4 py-2 rounded-lg font-medium border border-gray-200 shadow-sm hover:bg-gray-50 flex items-center gap-2 transition-colors whitespace-nowrap"
+                    >
+                      <i className="fa-solid fa-gear"></i> Manage Team
+                    </button>
+                    <div className="bg-blue-50 px-4 py-2 rounded-lg text-blue-800 font-medium border border-blue-100 flex items-center gap-2 whitespace-nowrap overflow-hidden">
+                      <label htmlFor="baseHours" className="hidden sm:inline">Total Hrs:</label>
+                      <input
+                        id="baseHours"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="w-20 px-2 py-1 border border-blue-200 rounded text-center bg-white focus:ring-2 focus:ring-blue-400 outline-none"
+                        value={baseHours}
+                        onChange={(e) => handleBaseHoursChange(e.target.value)}
+                      />
+                      <span>/Mo</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Top Summary Table */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className="bg-gray-800 text-white px-6 py-4 flex items-center gap-2">
+                    <i className="fa-solid fa-users text-lg"></i>
+                    <h2 className="font-semibold text-lg">Team Utilization Summary</h2>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-600 border-b">
+                        <tr>
+                          <th className="px-6 py-3 font-medium">Metric</th>
+                          {members.map(m => (
+                            <th key={m.id} className="px-6 py-3 font-medium text-center border-l">
+                              <div className="font-semibold text-gray-800">{m.name}</div>
+                              <div className="text-xs text-gray-500">Target Active: {m.targetActive}%</div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {/* Active % */}
+                        <tr className="bg-blue-50/30">
+                          <td className="px-6 py-3 font-medium text-blue-800">Active Project (%)</td>
+                          {members.map(m => {
+                            const stats = calculations.summary[m.id];
+                            if (!stats) return <td key={m.id} className="px-6 py-3 border-l"></td>;
+                            return (
+                              <td key={m.id} className="px-6 py-3 text-center border-l font-bold">
+                                <span className={`inline-flex items-center gap-1 ${stats.isMeetingTarget ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                  {stats.activePercent.toFixed(2)}%
+                                  {stats.isMeetingTarget ? <i className="fa-solid fa-circle-check"></i> : <i className="fa-solid fa-circle-exclamation"></i>}
+                                </span>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                        {/* Non-Active % */}
+                        <tr>
+                          <td className="px-6 py-3 font-medium text-gray-600">[Non-active] / Idle (%)</td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-6 py-3 text-center border-l text-gray-600 font-medium">
+                              {calculations.summary[m.id] ? calculations.summary[m.id].nonActivePercent.toFixed(2) : '0.00'}%
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Working Hours After Leave */}
+                        <tr className="bg-gray-50">
+                          <td className="px-6 py-3 font-medium text-gray-800">Net Working Hrs (Exclude Leave/Holiday)</td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-6 py-3 text-center border-l font-semibold text-gray-800">
+                              {calculations.summary[m.id] ? calculations.summary[m.id].netWorkingHours.toFixed(2) : '0.00'}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Active Hours */}
+                        <tr>
+                          <td className="px-6 py-3 text-gray-600">Total Active Hrs (Logged)</td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-6 py-3 text-center border-l text-blue-600 font-medium">
+                              {calculations.summary[m.id] ? calculations.summary[m.id].totalActiveHours.toFixed(2) : '0.00'}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Non-Active Hours */}
+                        <tr>
+                          <td className="px-6 py-3 text-gray-600">[Non-active] Hrs</td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-6 py-3 text-center border-l text-gray-500">
+                              {calculations.summary[m.id] ? calculations.summary[m.id].nonActiveHours.toFixed(2) : '0.00'}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Leave Inputs */}
+                        <tr className="bg-orange-50/30">
+                          <td className="px-6 py-3 flex items-center gap-2 text-orange-800">
+                            <i className="fa-regular fa-calendar-xmark text-sm"></i> Day Off / Leave (Hrs)
+                          </td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-4 py-2 border-l">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="w-full px-2 py-1 border rounded text-center focus:ring-2 focus:ring-orange-200 outline-none"
+                                value={(leaveData[m.id] && leaveData[m.id].leave) || ''}
+                                onChange={(e) => handleLeaveChange(m.id, 'leave', e.target.value)}
+                                placeholder="0"
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Holiday Inputs */}
+                        <tr className="bg-red-50/30">
+                          <td className="px-6 py-3 flex items-center gap-2 text-red-800">
+                            <i className="fa-regular fa-calendar-xmark text-sm"></i> Public Holiday (Hrs)
+                          </td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-4 py-2 border-l">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="w-full px-2 py-1 border rounded text-center focus:ring-2 focus:ring-red-200 outline-none"
+                                value={(leaveData[m.id] && leaveData[m.id].holiday) || ''}
+                                onChange={(e) => handleLeaveChange(m.id, 'holiday', e.target.value)}
+                                placeholder="0"
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Project Details Table */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                   <div className="bg-blue-600 text-white px-6 py-4 flex items-center justify-between">
+                    <h2 className="font-semibold text-lg">Active Projects Tracking</h2>
+                    <span className="text-sm bg-blue-700 px-3 py-1 rounded-full">กรอกชั่วโมงที่ใช้ในแต่ละโปรเจกต์</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-700 border-b">
+                        <tr>
+                          <th className="px-4 py-3 font-medium w-10 text-center">No.</th>
+                          <th className="px-4 py-3 font-medium cursor-pointer hover:bg-gray-100 transition-colors group" onClick={() => handleSort('name')}>
+                            Project Name <i className="fa-solid fa-sort ml-1 text-gray-300 group-hover:text-blue-500"></i>
+                          </th>
+                          <th className="px-4 py-3 font-medium text-center bg-yellow-50 cursor-pointer hover:bg-yellow-100 transition-colors group" onClick={() => handleSort('maxHours')}>
+                            Max Hr. <i className="fa-solid fa-sort ml-1 text-gray-400 group-hover:text-yellow-600"></i>
+                          </th>
+                          <th className="px-4 py-3 font-medium text-center bg-yellow-50 cursor-pointer hover:bg-yellow-100 transition-colors group" onClick={() => handleSort('totalHours')}>
+                            Total Hr. <i className="fa-solid fa-sort ml-1 text-gray-400 group-hover:text-yellow-600"></i>
+                          </th>
+                          <th className="px-4 py-3 font-medium text-center bg-yellow-50 cursor-pointer hover:bg-yellow-100 transition-colors group" onClick={() => handleSort('achRate')}>
+                            Ach Rate <i className="fa-solid fa-sort ml-1 text-gray-400 group-hover:text-yellow-600"></i>
+                          </th>
+                          {members.map(m => (
+                            <th 
+                              key={m.id} 
+                              className="px-4 py-3 font-medium text-center border-l bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors group"
+                              onClick={() => handleSort(`member-${m.id}`)}
+                            >
+                              {m.name} <i className="fa-solid fa-sort ml-1 text-gray-400 group-hover:text-blue-500"></i>
+                            </th>
+                          ))}
+                          <th className="px-4 py-3 font-medium text-center border-l bg-gray-50">ลบ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {sortedProjects.map((project, index) => {
+                          const stats = calculations.projectStats[project.id];
+                          const isOverLimit = stats.achRate > 100;
+                          const currentMax = maxHoursData[project.id] !== undefined ? maxHoursData[project.id] : project.maxHours;
+
+                          return (
+                            <tr key={project.id} className="hover:bg-gray-50 transition-colors group/row">
+                              <td className="px-4 py-3 text-center text-gray-500">{index + 1}</td>
+                              <td className="px-4 py-3 font-medium text-gray-800 min-w-[150px]">
+                                {editingProjectId === project.id ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={editingProjectName}
+                                      onChange={(e) => setEditingProjectName(e.target.value)}
+                                      onBlur={() => saveProjectName(project.id)}
+                                      onKeyDown={(e) => e.key === 'Enter' && saveProjectName(project.id)}
+                                      className="border border-gray-300 rounded px-2 py-1 w-full text-sm focus:ring-2 focus:ring-blue-400 outline-none"
+                                      autoFocus
+                                    />
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-between">
+                                    <span>{project.name}</span>
+                                    <button 
+                                      onClick={() => { setEditingProjectId(project.id); setEditingProjectName(project.name); }}
+                                      className="text-gray-300 hover:text-blue-600 opacity-0 group-hover/row:opacity-100 transition-all p-1"
+                                    >
+                                      <i className="fa-solid fa-pen text-xs"></i>
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                              
+                              {/* Project Quota Stats */}
+                              <td className="px-2 py-2 text-center bg-purple-50/30 border-r border-l border-gray-100">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  className="w-20 px-2 py-1.5 border rounded text-center font-semibold text-purple-700 focus:ring-2 focus:ring-purple-400 outline-none bg-white transition-all hover:border-purple-300 mx-auto block"
+                                  value={currentMax === 0 ? '0' : currentMax || ''}
+                                  onChange={(e) => handleMaxHourChange(project.id, e.target.value)}
+                                  placeholder="0"
+                                />
+                              </td>
+                              <td className="px-4 py-3 text-center font-semibold bg-gray-50/50">
+                                {stats.totalHours > 0 ? stats.totalHours.toFixed(2) : '-'}
+                              </td>
+                              <td className="px-4 py-3 text-center font-bold">
+                                <span className={`px-2 py-1 rounded text-xs ${
+                                  isOverLimit ? 'bg-red-100 text-red-700' : 
+                                  stats.achRate > 80 ? 'bg-orange-100 text-orange-700' : 
+                                  stats.achRate > 0 ? 'bg-green-100 text-green-700' : 'text-gray-400'
+                                }`}>
+                                  {stats.achRate.toFixed(2)}%
+                                </span>
+                              </td>
+
+                              {/* Individual Inputs */}
+                              {members.map(m => (
+                                <td key={m.id} className="px-2 py-2 border-l">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    className="w-full px-2 py-1.5 border rounded text-center text-gray-700 focus:ring-2 focus:ring-blue-400 outline-none bg-white transition-all hover:border-blue-300 min-w-[60px]"
+                                    value={hoursData[`${project.id}-${m.id}`] || ''}
+                                    onChange={(e) => handleHourChange(project.id, m.id, e.target.value)}
+                                    placeholder="-"
+                                  />
+                                </td>
+                              ))}
+                              
+                              {/* Delete Action */}
+                              <td className="px-2 py-2 text-center border-l">
+                                <button 
+                                  onClick={() => setDeleteConfirmId(project.id)}
+                                  className="text-red-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                                  title="ลบโปรเจกต์"
+                                >
+                                  <i className="fa-regular fa-trash-can"></i>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {/* Add New Project Row */}
+                        <tr className="bg-blue-50/50 border-t-2 border-blue-100">
+                          <td className="px-4 py-3 text-center text-blue-500"><i className="fa-solid fa-plus"></i></td>
+                          <td className="px-4 py-3">
+                            <input 
+                              type="text" 
+                              value={newProjectName} 
+                              onChange={e => setNewProjectName(e.target.value)} 
+                              placeholder="+ ชื่อโปรเจกต์ใหม่..." 
+                              className="w-full px-3 py-1.5 text-sm border rounded-lg focus:ring-2 focus:ring-blue-400 outline-none bg-white shadow-sm" 
+                              onKeyDown={(e) => e.key === 'Enter' && handleAddProject()}
+                            />
+                          </td>
+                          <td className="px-2 py-2 bg-purple-50/20">
+                            <input 
+                              type="number" 
+                              min="0" 
+                              step="0.01"
+                              value={newProjectMax} 
+                              onChange={e => setNewProjectMax(e.target.value)} 
+                              placeholder="Max Hr." 
+                              className="w-20 px-2 py-1.5 text-sm border rounded-lg text-center mx-auto block focus:ring-2 focus:ring-purple-400 outline-none bg-white shadow-sm" 
+                              onKeyDown={(e) => e.key === 'Enter' && handleAddProject()}
+                            />
+                          </td>
+                          <td colSpan="2" className="px-4 py-3 text-center">
+                            <button 
+                              onClick={handleAddProject} 
+                              disabled={!newProjectName.trim()}
+                              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all w-full shadow-sm ${
+                                newProjectName.trim() 
+                                  ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                                  : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                              }`}
+                            >
+                              เพิ่มโปรเจกต์
+                            </button>
+                          </td>
+                          <td colSpan={members.length + 1} className="bg-gray-50/50 border-l"></td>
+                        </tr>
+                      </tbody>
+                      {/* Table Footer / Totals */}
+                      <tfoot className="bg-gray-800 text-white font-semibold">
+                        <tr>
+                          <td colSpan="3" className="px-4 py-3 text-right">Grand Total Logged Hours:</td>
+                          <td className="px-4 py-3 text-center text-yellow-300">
+                            {Object.values(calculations.projectStats).reduce((acc, curr) => acc + curr.totalHours, 0).toFixed(2)}
+                          </td>
+                          <td className="px-4 py-3 text-center">-</td>
+                          {members.map(m => (
+                            <td key={m.id} className="px-4 py-3 text-center border-l border-gray-600">
+                              {calculations.summary[m.id] ? calculations.summary[m.id].totalActiveHours.toFixed(2) : '0.00'}
+                            </td>
+                          ))}
+                          <td className="border-l border-gray-600"></td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Delete Confirmation Modal for Projects */}
+              {deleteConfirmId && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white p-6 rounded-xl shadow-lg max-w-sm w-full mx-4">
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันการลบโปรเจกต์</h3>
+                    <p className="text-gray-600 mb-6">คุณแน่ใจหรือไม่ว่าต้องการลบโปรเจกต์นี้? ข้อมูลชั่วโมงที่บันทึกไว้ในโปรเจกต์นี้จะถูกซ่อนไว้</p>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setDeleteConfirmId(null)}
+                        className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                      >
+                        ยกเลิก
+                      </button>
+                      <button
+                        onClick={() => handleDeleteProject(deleteConfirmId)}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        ลบโปรเจกต์
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Delete Confirmation Modal for Months */}
+              {deleteMonthConfirm && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white p-6 rounded-xl shadow-lg max-w-sm w-full mx-4">
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันการลบเดือน</h3>
+                    <p className="text-gray-600 mb-6">คุณแน่ใจหรือไม่ว่าต้องการลบเดือน <span className="font-bold text-red-600">{deleteMonthConfirm}</span>? ข้อมูลทั้งหมดของเดือนนี้จะหายไป</p>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setDeleteMonthConfirm(null)}
+                        className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                      >
+                        ยกเลิก
+                      </button>
+                      <button
+                        onClick={() => handleDeleteMonth(deleteMonthConfirm)}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        ลบเดือนนี้
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Manage Team Modal */}
+              {showTeamModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white p-6 rounded-xl shadow-lg max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2"><i className="fa-solid fa-users text-blue-600"></i> Manage Team Members</h3>
+                      <button onClick={() => setShowTeamModal(false)} className="text-gray-400 hover:text-gray-700"><i className="fa-solid fa-xmark text-xl"></i></button>
+                    </div>
+                    
+                    <div className="overflow-y-auto flex-1 mb-4">
+                      <table className="w-full text-sm text-left border">
+                        <thead className="bg-gray-50 text-gray-700 border-b">
+                          <tr>
+                            <th className="px-4 py-2 font-medium">ชื่อสมาชิก (Name)</th>
+                            <th className="px-4 py-2 font-medium">ตำแหน่ง (Role)</th>
+                            <th className="px-4 py-2 font-medium">Target Active (%)</th>
+                            <th className="px-4 py-2 font-medium text-center">ลบ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {members.map(member => (
+                            <tr key={member.id} className="hover:bg-gray-50">
+                              <td className="px-4 py-2">
+                                <input 
+                                  type="text" 
+                                  value={member.name} 
+                                  onChange={(e) => handleUpdateMember(member.id, 'name', e.target.value)}
+                                  className="border border-gray-300 rounded px-2 py-1 w-full outline-none focus:border-blue-400"
+                                />
+                              </td>
+                              <td className="px-4 py-2">
+                                <input 
+                                  type="text" 
+                                  value={member.role || ''} 
+                                  onChange={(e) => handleUpdateMember(member.id, 'role', e.target.value)}
+                                  className="border border-gray-300 rounded px-2 py-1 w-full outline-none focus:border-blue-400"
+                                  placeholder="e.g. Member, Manager"
+                                />
+                              </td>
+                              <td className="px-4 py-2">
+                                <div className="flex items-center gap-1">
+                                  <input 
+                                    type="number" 
+                                    min="0" max="100"
+                                    value={member.targetActive} 
+                                    onChange={(e) => handleUpdateMember(member.id, 'targetActive', parseFloat(e.target.value) || 0)}
+                                    className="border border-gray-300 rounded px-2 py-1 w-20 text-center outline-none focus:border-blue-400"
+                                  /> %
+                                </div>
+                              </td>
+                              <td className="px-4 py-2 text-center">
+                                <button 
+                                  onClick={() => handleRemoveMember(member.id)}
+                                  className="text-red-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50"
+                                >
+                                  <i className="fa-regular fa-trash-can"></i>
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      
+                      <button 
+                        onClick={handleAddMember}
+                        className="mt-4 flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium px-2 py-1"
+                      >
+                        <i className="fa-solid fa-plus"></i> เพิ่มสมาชิกใหม่ (Add Member)
+                      </button>
+                    </div>
+
+                    <div className="flex justify-end pt-4 border-t gap-3">
+                      <button
+                        onClick={() => setShowTeamModal(false)}
+                        className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        เสร็จสิ้น (Done)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Delete Member Confirmation Modal */}
+              {memberToDelete && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
+                  <div className="bg-white p-6 rounded-xl shadow-lg max-w-sm w-full mx-4">
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันการลบสมาชิก</h3>
+                    <p className="text-gray-600 mb-6">คุณแน่ใจหรือไม่ว่าต้องการลบสมาชิกท่านนี้ออกจากทีม?</p>
+                    <div className="flex justify-end gap-3">
+                      <button
+                        onClick={() => setMemberToDelete(null)}
+                        className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                      >
+                        ยกเลิก
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMembers(members.filter(m => m.id !== memberToDelete));
+                          setMemberToDelete(null);
+                        }}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+                      >
+                        ลบสมาชิก
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
